@@ -1,0 +1,74 @@
+name: Manual Deployment to EC2
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Deployment Tag'
+        required: true
+        default: 'latest'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    # Step 1: Checkout the repository
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # Step 2: Build Docker image
+    - name: Build Docker image
+      run: |
+        docker build -t express-app:${{ github.sha }} .
+        docker build -t express-app:${{ inputs.tag }} .
+
+    # Step 3: Login to EC2 via SSH
+    - name: Deploy to EC2
+      env:
+        EC2_HOST: ${{ secrets.EC2_HOST }}
+        EC2_USER: ${{ secrets.EC2_USER }}
+        EC2_SSH_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+      run: |
+        # Prepare SSH key
+        echo "$EC2_SSH_KEY" > deploy_key.pem
+        chmod 600 deploy_key.pem
+
+        # Copy Docker image to EC2 instance
+        docker save express-app:${{ github.sha }} | \
+          ssh -o StrictHostKeyChecking=no -i deploy_key.pem \
+          $EC2_USER@$EC2_HOST docker load
+
+        # Login to EC2 and run container
+        ssh -o StrictHostKeyChecking=no -i deploy_key.pem $EC2_USER@$EC2_HOST << EOF
+          # Stop and remove existing container if it exists
+          docker stop express-app || true
+          docker rm express-app || true
+
+          # Run new container
+          docker run -d \
+            --name express-app \
+            -p 3000:3000 \
+            express-app:${{ github.sha }}
+        EOF
+
+        # Clean up local SSH key
+        rm deploy_key.pem
+
+    # Optional: Verify deployment
+    - name: Verify Deployment
+      env:
+        EC2_HOST: ${{ secrets.EC2_HOST }}
+        EC2_USER: ${{ secrets.EC2_USER }}
+        EC2_SSH_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+      run: |
+        # SSH and check if container is running
+        echo "$EC2_SSH_KEY" > deploy_key.pem
+        chmod 600 deploy_key.pem
+
+        ssh -o StrictHostKeyChecking=no -i deploy_key.pem $EC2_USER@$EC2_HOST << EOF
+          docker ps | grep express-app
+          docker logs express-app
+        EOF
+
+        rm deploy_key.pem
